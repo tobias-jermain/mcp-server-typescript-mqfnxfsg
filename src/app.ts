@@ -6,17 +6,14 @@ import { timingSafeEqual } from "node:crypto";
 import { z } from "zod/v4";
 
 const MCP_API_TOKEN = process.env.MCP_API_TOKEN;
+const NTFY_TOPIC = process.env.NTFY_TOPIC;
 
-// Called per request — stateless mode means no session persistence,
-// which is required for horizontally scaled deployments.
 export function createServer(): McpServer {
   const server = new McpServer(
     { name: "my-mcp-server", version: "1.0.0" },
     { capabilities: { logging: {} } },
   );
 
-  // Add tools here. `description` is surfaced to LLMs; Zod schemas
-  // in `inputSchema` are converted to JSON Schema automatically.
   server.registerTool(
     "hello",
     {
@@ -28,28 +25,56 @@ export function createServer(): McpServer {
     }),
   );
 
+  server.registerTool(
+    "send_brief",
+    {
+      description: "Send a brief message to T's phone via ntfy",
+      inputSchema: {
+        message: z.string().describe("The content of the brief to send"),
+        title: z.string().optional().describe("Optional title for the notification"),
+      },
+    },
+    async ({ message, title }) => {
+      if (!NTFY_TOPIC) {
+        return {
+          content: [{ type: "text", text: "Error: NTFY_TOPIC env var is not set." }],
+        };
+      }
+      const response = await fetch(`https://ntfy.sh/${NTFY_TOPIC}`, {
+        method: "POST",
+        body: message,
+        headers: {
+          "Title": title ?? "Claude Brief",
+          "Priority": "default",
+        },
+      });
+      if (!response.ok) {
+        return {
+          content: [{ type: "text", text: `Failed to send brief: ${response.status}` }],
+        };
+      }
+      return {
+        content: [{ type: "text", text: "Brief sent to phone." }],
+      };
+    },
+  );
+
   return server;
 }
 
 const RENDER_EXTERNAL_HOSTNAME = process.env.RENDER_EXTERNAL_HOSTNAME;
-
 export const app = createMcpExpressApp({
   host: "0.0.0.0",
   allowedHosts: RENDER_EXTERNAL_HOSTNAME ? [RENDER_EXTERNAL_HOSTNAME] : undefined,
 });
 
-// Simple bearer token auth. For multi-user or production setups,
-// consider upgrading to the MCP SDK's built-in OAuth 2.1 support.
-// When no token is set (local dev), auth is disabled entirely.
 app.use((req: Request, res: Response, next: NextFunction) => {
   if (req.path === "/health" || !MCP_API_TOKEN) {
     next();
     return;
   }
-
   const auth = req.headers.authorization ?? "";
   const expected = `Bearer ${MCP_API_TOKEN}`;
-  // timingSafeEqual requires equal-length buffers, so check length first
   if (
     auth.length === expected.length &&
     timingSafeEqual(Buffer.from(auth), Buffer.from(expected))
@@ -57,7 +82,6 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     next();
     return;
   }
-
   res.status(401).json({
     jsonrpc: "2.0",
     error: { code: -32001, message: "Unauthorized" },
@@ -72,7 +96,6 @@ app.get("/health", (_req: Request, res: Response) => {
 app.post("/mcp", async (req: Request, res: Response) => {
   const server = createServer();
   try {
-    // sessionIdGenerator: undefined → stateless (no session tracking)
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
     });
@@ -94,8 +117,6 @@ app.post("/mcp", async (req: Request, res: Response) => {
   }
 });
 
-// GET and DELETE on /mcp are part of the Streamable HTTP spec but
-// only apply to stateful servers. Reject explicitly for clarity.
 app.get("/mcp", (_req: Request, res: Response) => {
   res.status(405).json({
     jsonrpc: "2.0",
