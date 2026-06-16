@@ -62,10 +62,8 @@ export function createServer(): McpServer {
   return server;
 }
 
-const RENDER_EXTERNAL_HOSTNAME = process.env.RENDER_EXTERNAL_HOSTNAME;
 export const app = createMcpExpressApp({
   host: "0.0.0.0",
-  allowedHosts: RENDER_EXTERNAL_HOSTNAME ? [RENDER_EXTERNAL_HOSTNAME] : undefined,
 });
 
 app.use((req: Request, res: Response, next: NextFunction) => {
